@@ -1,0 +1,41 @@
+{
+  "name": "propel-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src --ext .ts,.tsx",
+    "format": "prettier --write \"src/**/*.tsx\" \"src/**/*.ts\""
+  },
+  "dependencies": {
+    "@emotion/react": "^11.11.0",
+    "@emotion/styled": "^11.11.0",
+    "@hookform/resolvers": "^5.7.1",
+    "@mui/icons-material": "^5.15.0",
+    "@mui/material": "^5.15.0",
+    "@supabase/supabase-js": "^2.112.0",
+    "@tanstack/react-query": "^5.24.0",
+    "axios": "^1.7.2",
+    "jwt-decode": "^3.1.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hook-form": "^7.84.0",
+    "react-router-dom": "^6.21.0",
+    "socket.io-client": "^4.7.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.67",
+    "@types/react-dom": "^18.2.22",
+    "@typescript-eslint/eslint-plugin": "^7.3.1",
+    "@typescript-eslint/parser": "^7.3.1",
+    "@vitejs/plugin-react": "^4.2.1",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.0",
+    "prettier": "^3.2.5",
+    "typescript": "^5.4.2",
+    "vite": "^5.2.8"
+  }
+}

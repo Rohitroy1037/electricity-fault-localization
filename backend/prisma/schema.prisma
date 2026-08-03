@@ -1,0 +1,570 @@
+// =============================================================================
+// Electricity Distribution Fault Localization System - Database Schema
+// Database Engine: PostgreSQL
+// ORM: Prisma
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+/// Types of electrical distribution faults identified by deterministic analysis
+enum FaultType {
+  SPAN_FAULT
+  TRANSFORMER_FAULT
+  FEEDER_FAULT
+}
+
+/// Roles for grid operators and utility managers
+enum UserRole {
+  OPERATOR
+  ENGINEER
+  ADMIN
+}
+
+/// Device event types emitted by IoT edge sensor nodes
+enum TelemetryEvent {
+  HEARTBEAT
+  POWER_LOST
+  POWER_RESTORED
+  BOOT
+}
+
+/// Strict lifecycle states for operational maintenance tickets
+enum TicketStatus {
+  DETECTED
+  ACKNOWLEDGED
+  CREW_ASSIGNED
+  RESOLVED
+  VERIFIED
+  CLOSED
+}
+
+/// Priority classification for incident maintenance tickets
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// Investigation and resolution lifecycle status of a detected fault
+enum FaultStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  FALSE_ALARM
+}
+
+/// Physical energization state of a distribution pole
+enum PoleStatus {
+  ENERGIZED
+  DE_ENERGIZED
+  UNKNOWN
+}
+
+/// Operational and communication connectivity state of the IoT edge device
+enum DeviceStatus {
+  ONLINE
+  OFFLINE
+  UNKNOWN
+}
+
+/// Scope boundary for scheduled utility maintenance outages
+enum OutageScope {
+  FEEDER
+  TRANSFORMER
+  POLE_SPAN
+}
+
+// =============================================================================
+// 1. SUBSTATION MODEL (Grid Distribution Infeed)
+// =============================================================================
+
+model Substation {
+  /// Unique Substation identifier (e.g., "SUB-CENTRAL-33KV")
+  substation_id String   @id @db.VarChar(64)
+  /// Human-readable substation name
+  name          String   @db.VarChar(128)
+  /// Geographic latitude coordinate (WGS 84)
+  latitude      Float
+  /// Geographic longitude coordinate (WGS 84)
+  longitude     Float
+  /// Total installed substation transformer capacity in MVA
+  capacity_mva  Float?
+  /// Record creation timestamp
+  created_at    DateTime @default(now())
+  /// Record last update timestamp
+  updated_at    DateTime @updatedAt
+
+  // Relations: Substation -> Feeders
+  feeders       Feeder[]
+
+  @@map("substations")
+}
+
+// =============================================================================
+// 2. FEEDER MODEL (Primary 11kV/33kV Distribution Line)
+// =============================================================================
+
+model Feeder {
+  /// Unique Feeder identifier (e.g., "FDR-NORTH-01")
+  feeder_id     String       @id @db.VarChar(64)
+  /// Parent Substation supplying this feeder
+  substation_id String       @db.VarChar(64)
+  /// Human-readable feeder line name
+  feeder_name   String       @db.VarChar(128)
+  /// Operating nominal voltage in kV (e.g., 11.0, 33.0)
+  voltage_kv    Float?
+  /// Record creation timestamp
+  created_at    DateTime     @default(now())
+  /// Record last update timestamp
+  updated_at    DateTime     @updatedAt
+
+  // Relations: Substation -> Feeder -> Transformers & Poles
+  substation          Substation          @relation(fields: [substation_id], references: [substation_id], onDelete: Restrict)
+  transformers        Transformer[]
+  poles               Pole[]
+  faults              Fault[]
+  scheduled_outages   ScheduledOutage[]
+  simulator_scenarios SimulatorScenario[]
+
+  @@index([substation_id], name: "idx_feeder_substation")
+  @@map("feeders")
+}
+
+// =============================================================================
+// 3. TRANSFORMER MODEL (Distribution Transformer / DT)
+// =============================================================================
+
+model Transformer {
+  /// Unique Distribution Transformer identifier (e.g., "DT-101")
+  dt_id             String   @id @db.VarChar(64)
+  /// Feeder line supplying this transformer
+  feeder_id         String   @db.VarChar(64)
+  /// Geographic latitude coordinate (WGS 84)
+  latitude          Float
+  /// Geographic longitude coordinate (WGS 84)
+  longitude         Float
+  /// Rated transformer capacity in kVA (optional)
+  capacity_kva      Float?
+  /// Total consumer households fed by this transformer
+  households_served Int      @default(0)
+  /// Record creation timestamp
+  created_at        DateTime @default(now())
+  /// Record last update timestamp
+  updated_at        DateTime @updatedAt
+
+  // Relations: Feeder -> Transformer -> Poles
+  feeder            Feeder   @relation(fields: [feeder_id], references: [feeder_id], onDelete: Restrict)
+  poles             Pole[]
+  faults            Fault[]
+
+  @@index([feeder_id], name: "idx_transformer_feeder")
+  @@map("transformers")
+}
+
+// =============================================================================
+// 4. POLE MODEL (Distribution Node)
+// =============================================================================
+
+model Pole {
+  /// Unique physical pole code (e.g., "P-10101")
+  pole_id        String     @id @db.VarChar(64)
+  /// Geographic latitude coordinate (WGS 84)
+  latitude       Float
+  /// Geographic longitude coordinate (WGS 84)
+  longitude      Float
+  /// Feeder line supplying this pole
+  feeder_id      String     @db.VarChar(64)
+  /// Distribution transformer supplying this pole
+  dt_id          String     @db.VarChar(64)
+  /// Sequence index along the feeder branch (nullable: ~60% poles have incomplete topology)
+  seq_on_line    Int?
+  /// Parent pole ID upstream towards source (nullable: ~60% poles have incomplete topology)
+  parent_pole_id String?    @db.VarChar(64)
+  /// Classification/material of the pole (e.g., "PCC", "STEEL_TUBULAR", "LT_DISTRIBUTION")
+  pole_type      String     @default("LT_DISTRIBUTION") @db.VarChar(64)
+  /// Administrative ward / municipal subdivision
+  ward           String     @db.VarChar(64)
+  /// Postal code (nullable)
+  pincode        String?    @db.VarChar(16)
+  /// Fast flag indicating if physical IoT hardware is installed on this pole
+  has_device     Boolean    @default(false)
+  /// Current physical electrical status
+  current_status PoleStatus @default(UNKNOWN)
+  /// Record creation timestamp
+  created_at     DateTime   @default(now())
+  /// Record last update timestamp
+  updated_at     DateTime   @updatedAt
+
+  // Relations: Feeder -> Transformer -> Pole & Pole -> Pole
+  feeder              Feeder      @relation(fields: [feeder_id], references: [feeder_id], onDelete: Restrict)
+  transformer         Transformer @relation(fields: [dt_id], references: [dt_id], onDelete: Restrict)
+  parent_pole         Pole?       @relation("PoleHierarchy", fields: [parent_pole_id], references: [pole_id], onDelete: SetNull)
+  child_poles         Pole[]      @relation("PoleHierarchy")
+  device              Device?
+  telemetries         Telemetry[]
+
+  // Fault spans where this pole is the upstream/source side
+  faults_as_from_pole Fault[]     @relation("FaultFromPole")
+  // Fault spans where this pole is the downstream side
+  faults_as_to_pole   Fault[]     @relation("FaultToPole")
+
+  @@index([feeder_id], name: "idx_pole_feeder")
+  @@index([dt_id], name: "idx_pole_dt")
+  @@index([parent_pole_id], name: "idx_pole_parent")
+  @@index([current_status], name: "idx_pole_status")
+  @@index([ward], name: "idx_pole_ward")
+  @@map("poles")
+}
+
+// =============================================================================
+// 5. DEVICE MODEL (IoT Edge Hardware Unit)
+// =============================================================================
+
+model Device {
+  /// Unique hardware identifier / MAC / IMEI (e.g., "DEV-ESP32-9021")
+  device_id        String       @id @db.VarChar(64)
+  /// Foreign key pointing to the attached Pole (1:1 relation)
+  pole_id          String       @unique @db.VarChar(64)
+  /// Current installed firmware version string (e.g., "v1.4.2")
+  firmware_version String?      @db.VarChar(32)
+  /// Battery voltage level in millivolts (e.g., 3700 for 3.7V)
+  battery_mv       Int?
+  /// Received Signal Strength Indicator in dBm (e.g., -75)
+  rssi             Int?
+  /// Timestamp of the last verified packet received from this device (Server receive time)
+  last_seen        DateTime?
+  /// Latest timestamp reported directly by the IoT device's internal RTC clock
+  last_device_timestamp DateTime?
+  /// Network connectivity status of the device
+  online_status    DeviceStatus @default(UNKNOWN)
+  /// Record creation timestamp
+  created_at       DateTime     @default(now())
+  /// Record last update timestamp
+  updated_at       DateTime     @updatedAt
+
+  // Relations
+  pole             Pole         @relation(fields: [pole_id], references: [pole_id], onDelete: Cascade)
+  telemetries      Telemetry[]
+
+  @@index([online_status], name: "idx_device_online_status")
+  @@index([last_seen], name: "idx_device_last_seen")
+  @@map("devices")
+}
+
+// =============================================================================
+// 6. TELEMETRY MODEL (High-Volume IoT Stream Packets)
+// =============================================================================
+
+model Telemetry {
+  /// Auto-incrementing 64-bit integer identifier for ultra-high throughput writes
+  id               BigInt         @id @default(autoincrement())
+  /// Hardware identifier of transmitting device
+  device_id        String         @db.VarChar(64)
+  /// Pole identifier where device is mounted
+  pole_id          String         @db.VarChar(64)
+  /// Monotonically increasing packet sequence number transmitted by device firmware
+  seq_no           Int
+  /// Event type triggered by edge state change or periodic heartbeat
+  event            TelemetryEvent
+  /// Binary energization state (true = Energized/ON, false = De-energized/OFF)
+  energized        Boolean
+  /// Sensor device local RTC timestamp when event occurred
+  device_timestamp DateTime
+  /// Backend server receipt timestamp
+  received_at      DateTime       @default(now())
+
+  // Relations
+  device           Device         @relation(fields: [device_id], references: [device_id], onDelete: Cascade)
+  pole             Pole           @relation(fields: [pole_id], references: [pole_id], onDelete: Cascade)
+
+  /// Strict deduplication: A single device cannot submit duplicate sequence numbers
+  @@unique([device_id, seq_no], name: "uniq_device_seq_no")
+  /// Ultra-fast time-series query index by device
+  @@index([device_id, device_timestamp(sort: Desc)], name: "idx_telemetry_device_time")
+  /// Fast query index by pole
+  @@index([pole_id, device_timestamp(sort: Desc)], name: "idx_telemetry_pole_time")
+  /// Ingestion order index for queue workers & window aggregators
+  @@index([device_timestamp(sort: Desc)], name: "idx_telemetry_time")
+  /// Event filter index
+  @@index([event], name: "idx_telemetry_event")
+  @@map("telemetries")
+}
+
+// =============================================================================
+// 7. FAULT MODEL (Deterministic Inferred Grid Faults)
+// =============================================================================
+
+model Fault {
+  /// Unique Fault UUID
+  id             String              @id @default(uuid()) @db.Uuid
+  /// Classified electrical fault boundary
+  fault_type     FaultType
+  /// Current operational lifecycle status of the fault
+  status         FaultStatus         @default(OPEN)
+  /// Feeder line where fault occurred
+  feeder_id      String              @db.VarChar(64)
+  /// Distribution Transformer ID (populated if fault is isolated to a DT or its downstream)
+  dt_id          String?             @db.VarChar(64)
+  /// Upstream boundary pole of the faulted line span (nullable for pure DT/Feeder faults)
+  from_pole_id   String?             @db.VarChar(64)
+  /// Downstream boundary pole of the faulted line span (nullable for pure DT/Feeder faults)
+  to_pole_id     String?             @db.VarChar(64)
+  /// Postal code for regional dispatch and locality grouping
+  pincode        String?             @db.VarChar(16)
+  /// Triangulated / estimated geographic latitude of the fault midpoint
+  estimated_lat  Float?
+  /// Triangulated / estimated geographic longitude of the fault midpoint
+  estimated_lng  Float?
+  /// Deterministic confidence calculation (0.00 to 1.00)
+  confidence     Float               @default(1.0)
+  /// Array of affected pole IDs and associated metadata stored as structured JSON
+  affected_poles Json                @default("[]")
+  /// Explainable deterministic deduction summary detailing the topological reason
+  root_cause     String              @db.Text
+  /// Timestamp when fault was first deduced by the localization engine
+  detected_at    DateTime            @default(now())
+  /// Timestamp when grid conditions returned to normal and fault was cleared
+  resolved_at    DateTime?
+  /// Record creation timestamp
+  created_at     DateTime            @default(now())
+  /// Record last update timestamp
+  updated_at     DateTime            @updatedAt
+
+  // Relations
+  feeder         Feeder              @relation(fields: [feeder_id], references: [feeder_id], onDelete: Restrict)
+  transformer    Transformer?        @relation(fields: [dt_id], references: [dt_id], onDelete: SetNull)
+  from_pole      Pole?               @relation("FaultFromPole", fields: [from_pole_id], references: [pole_id], onDelete: SetNull)
+  to_pole        Pole?               @relation("FaultToPole", fields: [to_pole_id], references: [pole_id], onDelete: SetNull)
+  tickets        Ticket[]
+  ai_summaries   AiIncidentSummary[]
+
+  @@index([status], name: "idx_fault_status")
+  @@index([feeder_id, status], name: "idx_fault_feeder_status")
+  @@index([dt_id], name: "idx_fault_dt")
+  @@index([pincode], name: "idx_fault_pincode")
+  @@index([detected_at(sort: Desc)], name: "idx_fault_detected_at")
+  @@map("faults")
+}
+
+// =============================================================================
+// 8. TICKET MODEL (Operational Work Order Lifecycle)
+// =============================================================================
+
+model Ticket {
+  /// Unique Ticket UUID
+  id                 String         @id @default(uuid()) @db.Uuid
+  /// Human-readable sequential reference code (e.g., "TKT-2026-00042")
+  ticket_no          String         @unique @db.VarChar(32)
+  /// Associated Fault foreign key
+  fault_id           String         @db.Uuid
+  /// Current ticket progression status
+  status             TicketStatus   @default(DETECTED)
+  /// Priority level for dispatch response SLA
+  priority           TicketPriority @default(MEDIUM)
+  /// Assigned field maintenance crew / vehicle unit
+  assigned_crew      String?        @db.VarChar(128)
+  /// Field notes logged by maintenance crew
+  crew_notes         String?        @db.Text
+  /// Telemetry verification logs confirming restorative power before closure
+  verification_notes String?        @db.Text
+  /// Timestamp when ticket was auto-generated upon fault detection
+  detected_at        DateTime       @default(now())
+  /// Timestamp when dispatch operator acknowledged the ticket
+  acknowledged_at    DateTime?
+  /// Timestamp when crew was dispatched
+  crew_assigned_at   DateTime?
+  /// Timestamp when crew marked repairs complete
+  resolved_at        DateTime?
+  /// Timestamp when automated telemetry verification succeeded
+  verified_at        DateTime?
+  /// Timestamp when ticket was officially closed
+  closed_at          DateTime?
+  /// Record creation timestamp
+  created_at         DateTime       @default(now())
+  /// Record last update timestamp
+  updated_at         DateTime       @updatedAt
+
+  // Relations
+  fault              Fault          @relation(fields: [fault_id], references: [id], onDelete: Cascade)
+  audit_logs         AuditLog[]
+
+  @@index([status], name: "idx_ticket_status")
+  @@index([priority], name: "idx_ticket_priority")
+  @@index([fault_id], name: "idx_ticket_fault")
+  @@index([created_at(sort: Desc)], name: "idx_ticket_created_at")
+  @@map("tickets")
+}
+
+// =============================================================================
+// 9. SCHEDULED OUTAGE MODEL (Maintenance Windows)
+// =============================================================================
+
+model ScheduledOutage {
+  /// Unique Outage UUID
+  id         String      @id @default(uuid()) @db.Uuid
+  /// Descriptive summary title of the planned maintenance
+  title      String      @db.VarChar(255)
+  /// Detailed operational rationale
+  reason     String      @db.Text
+  /// Topological scope granularity
+  scope      OutageScope
+  /// Target Feeder ID (if scope is FEEDER or sub-element)
+  feeder_id  String?     @db.VarChar(64)
+  /// Target Distribution Transformer ID (if scope is TRANSFORMER)
+  dt_id      String?     @db.VarChar(64)
+  /// Scheduled window start time
+  start_time DateTime
+  /// Scheduled window end time
+  end_time   DateTime
+  /// Manual override flag to enable or deactivate planned window suppression
+  is_active  Boolean     @default(true)
+  /// Record creation timestamp
+  created_at DateTime    @default(now())
+  /// Record last update timestamp
+  updated_at DateTime    @updatedAt
+
+  // Relations
+  feeder     Feeder?     @relation(fields: [feeder_id], references: [feeder_id], onDelete: SetNull)
+
+  @@index([feeder_id], name: "idx_outage_feeder")
+  @@index([dt_id], name: "idx_outage_dt")
+  @@index([start_time, end_time], name: "idx_outage_window")
+  @@map("scheduled_outages")
+}
+
+// =============================================================================
+// 10. SIMULATOR SCENARIO MODEL (Deterministic Fault Simulation & Testing)
+// =============================================================================
+
+model SimulatorScenario {
+  /// Unique Scenario UUID
+  id               String    @id @default(uuid()) @db.Uuid
+  /// Scenario name (e.g., "Feeder-1 Line Drop Simulation")
+  name             String    @db.VarChar(255)
+  /// Scenario description and expected outcome
+  description      String?   @db.Text
+  /// Target feeder for the simulation
+  feeder_id        String    @db.VarChar(64)
+  /// Fault type to inject
+  fault_type       FaultType
+  /// Target transformer for injection (if applicable)
+  target_dt_id     String?   @db.VarChar(64)
+  /// Target pole for injection (if applicable)
+  target_pole_id   String?   @db.VarChar(64)
+  /// Upstream span boundary pole for line-cut simulation
+  target_span_from String?   @db.VarChar(64)
+  /// Downstream span boundary pole for line-cut simulation
+  target_span_to   String?   @db.VarChar(64)
+  /// Pre-scripted telemetry packet sequence payload (JSON array of simulated events)
+  event_sequence   Json      @default("[]")
+  /// Indicates if this scenario is actively executing against the ingestion pipeline
+  is_running       Boolean   @default(false)
+  /// Record creation timestamp
+  created_at       DateTime  @default(now())
+  /// Record last update timestamp
+  updated_at       DateTime  @updatedAt
+
+  // Relations
+  feeder           Feeder    @relation(fields: [feeder_id], references: [feeder_id], onDelete: Restrict)
+
+  @@map("simulator_scenarios")
+}
+
+// =============================================================================
+// 11. AUDIT LOG MODEL (System Action Tracking & Compliance)
+// =============================================================================
+
+model AuditLog {
+  /// Unique Audit Entry UUID
+  id          String   @id @default(uuid()) @db.Uuid
+  /// Specific business action name (e.g., "TICKET_STATUS_CHANGED", "CREW_ASSIGNED", "FAULT_RESOLVED")
+  action      String   @db.VarChar(128)
+  /// Entity classification (e.g., "TICKET", "FAULT", "POLE", "OUTAGE")
+  entity_type String   @db.VarChar(64)
+  /// Entity primary key identifier
+  entity_id   String   @db.VarChar(64)
+  /// Operator identity or "SYSTEM_DAEMON"
+  user_id     String?  @db.VarChar(128)
+  /// Ticket foreign key (optional, when action is ticket-specific)
+  ticket_id   String?  @db.Uuid
+  /// JSON snapshot of previous values, new values, or operational context
+  metadata    Json?
+  /// Client IP address for security audit trails
+  ip_address  String?  @db.VarChar(45)
+  /// Record creation timestamp
+  created_at  DateTime @default(now())
+
+  // Relations
+  ticket      Ticket?  @relation(fields: [ticket_id], references: [id], onDelete: SetNull)
+
+  @@index([entity_type, entity_id], name: "idx_audit_entity")
+  @@index([action], name: "idx_audit_action")
+  @@index([created_at(sort: Desc)], name: "idx_audit_created_at")
+  @@map("audit_logs")
+}
+
+// =============================================================================
+// 12. AI INCIDENT SUMMARY MODEL (Operator-Friendly Summaries ONLY)
+// =============================================================================
+
+model AiIncidentSummary {
+  /// Unique Summary UUID
+  id                 String   @id @default(uuid()) @db.Uuid
+  /// Associated Fault foreign key
+  fault_id           String   @db.Uuid
+  /// Plain-English narrative describing the incident for grid operators
+  summary_text       String   @db.Text
+  /// Concise summary of estimated affected consumers/poles
+  affected_summary   String?  @db.Text
+  /// Recommended immediate operational steps for field dispatch
+  recommended_action String?  @db.Text
+  /// Model name used to generate this summary (e.g., "gemini-1.5-flash")
+  model_used         String?  @db.VarChar(64)
+  /// Prompt token consumption for cost & usage tracking
+  prompt_tokens      Int?
+  /// Completion token consumption for cost & usage tracking
+  completion_tokens  Int?
+  /// Record creation timestamp
+  created_at         DateTime @default(now())
+
+  // Relations
+  fault              Fault    @relation(fields: [fault_id], references: [id], onDelete: Cascade)
+
+  @@index([fault_id], name: "idx_ai_summary_fault")
+  @@map("ai_incident_summaries")
+}
+
+// =============================================================================
+// 13. USER MODEL (Grid Operator & System Authentication Accounts)
+// =============================================================================
+
+model User {
+  /// Unique User UUID
+  id         String   @id @default(uuid()) @db.Uuid
+  /// Unique login email address
+  email      String   @unique @db.VarChar(255)
+  /// Full name of grid operator
+  name       String   @db.VarChar(128)
+  /// Role classification
+  role       UserRole @default(OPERATOR)
+  /// Hashed password
+  password   String   @db.VarChar(255)
+  /// Account creation timestamp
+  created_at DateTime @default(now())
+  /// Record last update timestamp
+  updated_at DateTime @updatedAt
+
+  @@index([email], name: "idx_user_email")
+  @@map("users")
+}
