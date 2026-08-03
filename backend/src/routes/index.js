@@ -1,8 +1,7 @@
 /**
  * Root Router Aggregator
  *
- * Mounts all sub-routers. As new modules are introduced, their routes are registered here.
- * Currently mounts only foundation endpoints (e.g., health check).
+ * Mounts all sub-routers.
  */
 
 import { Router } from 'express';
@@ -11,6 +10,20 @@ import telemetryRoutes from './telemetry.routes.js';
 import analyticsRoutes from './analytics.routes.js';
 
 const router = Router();
+
+// Root welcome & health status
+router.get('/', (req, res) => {
+  res.json({
+    name: 'Electricity Distribution Fault Localization API',
+    status: 'online',
+    version: '1.0.0',
+    endpoints: {
+      health: '/health',
+      telemetry: '/api/v1/telemetry',
+      analytics: '/api/v1/analytics',
+    },
+  });
+});
 
 // Mount Health Check endpoint
 router.use('/health', healthRoutes);
@@ -22,4 +35,3 @@ router.use('/api/v1/telemetry', telemetryRoutes);
 router.use('/api/v1/analytics', analyticsRoutes);
 
 export default router;
-
